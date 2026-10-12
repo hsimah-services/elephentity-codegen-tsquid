@@ -2,7 +2,7 @@
 name = "elephentity-codegen-tsquid"
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "MIT"
 description = "Compile tsquid server manifests for Elephentity PHP applications"
 
 [[bin]]
