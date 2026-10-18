@@ -124,6 +124,11 @@ fn language(config: &Value) -> Result<Language, String> {
     }
 }
 
+/// An answer that claims no output at all: the language is not one this builder writes.
+fn response_unclaimed(errors: Vec<String>) -> Value {
+    json!({"elephentity":1,"irVersion":"1.2","headerStyle":"line-comment","extensions":[],"files":[],"errors":errors})
+}
+
 fn response(files: Vec<Value>, errors: Vec<String>, language: &Language) -> Value {
     match language {
         Language::Php => {
@@ -160,22 +165,22 @@ fn run(request: &Value) -> Result<Value, String> {
     }
     let language = match language(&request["config"]) {
         Ok(language) => language,
-        Err(error) => return Ok(response(vec![], vec![error], &Language::Php)),
+        Err(error) => return Ok(response_unclaimed(vec![error])),
     };
     if integrations.get("tsquid").is_none() {
         return Ok(response(vec![], vec![], &language));
     }
-    if language == Language::Csharp {
-        let problems = namespace_problems(&request["config"]);
-        if !problems.is_empty() {
-            return Ok(response(vec![], problems, &language));
-        }
-    }
+    // The configuration's problems and the manifest's come back together.
+    let mut problems = if language == Language::Csharp {
+        namespace_problems(&request["config"])
+    } else {
+        vec![]
+    };
     let result = (|| {
-        let manifest_path = request["config"]["manifest"].as_str().filter(|s| !s.is_empty()).ok_or("Set the tsquid target's manifest path (relative to its output directory, or absolute).")?;
+        let manifest_path = request["config"]["manifest"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| vec!["Set the tsquid target's manifest path (relative to its output directory, or absolute).".to_string()])?;
         let output = request["outputDirectory"]
             .as_str()
-            .ok_or("Missing outputDirectory.")?;
+            .ok_or_else(|| vec!["Missing outputDirectory.".to_string()])?;
         // Resolve .. before opening: output directories may not exist on the first build.
         let mut path = PathBuf::new();
         for component in Path::new(output).join(manifest_path).components() {
@@ -188,11 +193,14 @@ fn run(request: &Value) -> Result<Value, String> {
             }
         }
         let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+            .map_err(|e| vec![format!("Cannot read {}: {e}", path.display())])?;
         let manifest: Value =
-            serde_json::from_str(&text).map_err(|e| format!("Invalid manifest JSON: {e}"))?;
-        validate::validate(&manifest)?;
-        Ok::<_, String>(match language {
+            serde_json::from_str(&text).map_err(|e| vec![format!("Invalid manifest JSON: {e}")])?;
+        let invalid = validate::validate(&manifest);
+        if !invalid.is_empty() {
+            return Err(invalid);
+        }
+        Ok::<_, Vec<String>>(match language {
             Language::Php => ("tsquid-manifest.php", emit_php::manifest(&manifest)),
             Language::Csharp => (
                 "TsquidManifest.cs",
@@ -204,8 +212,14 @@ fn run(request: &Value) -> Result<Value, String> {
         })
     })();
     Ok(match result {
-        Ok((path, body)) => response(vec![json!({"path":path,"body":body})], vec![], &language),
-        Err(error) => response(vec![], vec![error], &language),
+        Ok((path, body)) if problems.is_empty() => {
+            response(vec![json!({"path":path,"body":body})], vec![], &language)
+        }
+        Ok(_) => response(vec![], problems, &language),
+        Err(found) => {
+            problems.extend(found);
+            response(vec![], problems, &language)
+        }
     })
 }
 
@@ -244,10 +258,10 @@ mod tests {
     fn protocol_and_generated_contract() {
         let vectors: Value =
             serde_json::from_str(include_str!("../tests/fixtures/vectors.json")).unwrap();
-        validate::validate(&vectors["manifest"]).unwrap();
+        assert!(validate::validate(&vectors["manifest"]).is_empty());
         let mut bad = vectors["manifest"].clone();
         bad["version"] = json!(2);
-        assert!(validate::validate(&bad).is_err());
+        assert!(!validate::validate(&bad).is_empty());
         assert!(run(&json!({"elephentity":1,"irVersion":"1.1","request":"describe"})).is_err());
         assert!(
             run(&json!({"elephentity":1,"irVersion":"1.2","request":"describe"})).unwrap()

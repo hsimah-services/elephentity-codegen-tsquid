@@ -158,6 +158,8 @@ fn an_unknown_language_is_an_error() {
         let response = answer(&request("starter", json!({"language": language})));
 
         assert_eq!(response["files"], json!([]));
+        assert_eq!(response["extensions"], json!([]));
+        assert_eq!(response["headerStyle"], "line-comment");
         assert!(
             response["errors"][0]
                 .as_str()
@@ -169,20 +171,27 @@ fn an_unknown_language_is_an_error() {
 }
 
 #[test]
-fn a_bad_manifest_is_refused_for_both_languages() {
-    for config in [json!({}), json!({"language": "csharp", "namespace": "App"})] {
-        let mut request = request("starter", config);
-        request["config"]["manifest"] = json!("../starter.manifest.json");
-        let mut manifest: Value = serde_json::from_str(
-            &std::fs::read_to_string(root().join("starter.manifest.json")).unwrap(),
+fn a_manifest_of_another_version_is_refused_for_both_languages() {
+    for (tag, config) in [
+        ("php", json!({})),
+        ("cs", json!({"language": "csharp", "namespace": "App"})),
+    ] {
+        let directory = root().join(format!("out-version-{tag}"));
+
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("v2.json"),
+            json!({"version": 2, "routes": []}).to_string(),
         )
         .unwrap();
-        manifest["version"] = json!(2);
-        std::fs::create_dir_all(root().join("out")).unwrap();
-        std::fs::write(root().join("out/bad.json"), manifest.to_string()).unwrap();
-        request["config"]["manifest"] = json!("bad.json");
+
+        let mut request = request("starter", config);
+        request["outputDirectory"] = json!(directory);
+        request["config"]["manifest"] = json!("v2.json");
 
         let response = answer(&request);
+
+        let _ = std::fs::remove_dir_all(&directory);
 
         assert_eq!(response["files"], json!([]));
         assert!(
@@ -190,8 +199,6 @@ fn a_bad_manifest_is_refused_for_both_languages() {
             "{response}"
         );
     }
-
-    let _ = std::fs::remove_dir_all(root().join("out"));
 }
 
 #[test]
@@ -210,4 +217,81 @@ fn describe_and_the_empty_integration_are_unchanged() {
         assert_eq!(response["files"], json!([]));
         assert_eq!(response["errors"], json!([]));
     }
+}
+
+/// A manifest written to a directory of its own (the tests run in parallel), and the generator asked about it.
+fn manifest_with(tag: &str, routes: Value, config: Value) -> Value {
+    let directory = root().join(format!("out-{tag}"));
+
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("broken.json"),
+        json!({"version": 1, "routes": routes}).to_string(),
+    )
+    .unwrap();
+
+    let mut request = request("starter", config);
+    request["outputDirectory"] = json!(directory);
+    request["config"]["manifest"] = json!("broken.json");
+
+    let response = answer(&request);
+
+    let _ = std::fs::remove_dir_all(&directory);
+
+    response
+}
+
+#[test]
+fn every_problem_in_a_manifest_is_reported_in_one_run_and_names_its_route() {
+    let routes = json!([
+        {"name": "Alpha", "path": "no-slash", "ssr": true, "fields": {}},
+        {"name": "Beta", "path": "/b/:id", "ssr": true, "fields": {"id": {"kind": "float", "optional": false, "in": "path"}}},
+        {"name": "Gamma", "path": "/g/:id", "ssr": true, "fields": {}, "query": {"operation": "", "id": "q", "text": "query { x }", "variables": {"v": {"input": "nope"}}}},
+        {"name": "Alpha", "path": "/again", "ssr": true, "fields": {}},
+    ]);
+    let problems: Vec<String> = manifest_with("every", routes, json!({}))["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e.as_str().unwrap().to_string())
+        .collect();
+
+    for fragment in [
+        "Route Alpha: the path \"no-slash\" must start with /.",
+        "Invalid field Beta.id: kind \"float\"",
+        "Route Gamma: the path parameter :id has no field with in: path.",
+        "Route Gamma: the query has an empty operation.",
+        "Route Gamma: the query variable v binds input nope",
+        "Route name Alpha is used more than once.",
+    ] {
+        assert!(
+            problems.iter().any(|p| p.contains(fragment)),
+            "{fragment}\n{problems:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_bad_namespace_and_a_bad_manifest_are_reported_together() {
+    let response = manifest_with(
+        "together",
+        json!([{"name": "", "path": "/", "ssr": true, "fields": {}}]),
+        json!({"language": "csharp", "namespace": "My-App"}),
+    );
+    let problems = response["errors"].as_array().unwrap();
+
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("not a valid C# namespace")),
+        "{problems:?}"
+    );
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("has no name")),
+        "{problems:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(root().join("out"));
 }

@@ -3,5 +3,6 @@
 /tests/dotnet/.deps/
 /tests/dotnet/Generated/
 /tests/dotnet/obj/
+/tests/fixtures/out*/
 /tests/fixtures/out/
 /vendor/

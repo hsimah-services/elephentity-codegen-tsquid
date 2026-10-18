@@ -37,58 +37,123 @@ struct Binding {
     _default: Option<Value>,
 }
 
-pub fn validate(value: &Value) -> Result<(), String> {
-    let manifest: Manifest = serde_json::from_value(value.clone())
-        .map_err(|e| format!("Invalid tsquid manifest: {e}"))?;
+/// Every problem with a manifest, together, each naming the route (and field or variable) it is about. Empty when it is usable.
+pub fn validate(value: &Value) -> Vec<String> {
+    let manifest: Manifest = match serde_json::from_value(value.clone()) {
+        Ok(manifest) => manifest,
+        // Not even the right shape: nothing further can be said about its routes.
+        Err(error) => return vec![format!("Invalid tsquid manifest: {error}")],
+    };
+    let mut problems = Vec::new();
+
     if manifest.version != 1 {
-        return Err("Unsupported tsquid manifest version; expected 1.".into());
+        problems.push(format!(
+            "Unsupported tsquid manifest version {}; expected 1.",
+            manifest.version
+        ));
     }
+
     let mut names = std::collections::BTreeSet::new();
+
     for route in manifest.routes {
-        if route.name.is_empty()
-            || !names.insert(route.name.clone())
-            || !route.path.starts_with('/')
-        {
-            return Err("Route names must be unique and nonempty; paths must start with /.".into());
-        }
+        // Whether a route is server-rendered is the server's business at request time, not a validity rule.
         let _ = route.ssr;
+
+        if route.name.is_empty() {
+            problems.push(format!("A route (path {}) has no name.", route.path));
+        } else if !names.insert(route.name.clone()) {
+            problems.push(format!("Route name {} is used more than once.", route.name));
+        }
+
+        if !route.path.starts_with('/') {
+            problems.push(format!(
+                "Route {}: the path {:?} must start with /.",
+                route.name, route.path
+            ));
+        }
+
         let params: Vec<_> = route
             .path
             .split('/')
             .filter_map(|s| s.strip_prefix(':'))
             .collect();
+
         for (name, field) in &route.fields {
             if !["string", "int", "bool", "string[]", "int[]", "bool[]"]
                 .contains(&field.kind.as_str())
-                || !["path", "query"].contains(&field.r#in.as_str())
-                || (field.r#in == "path"
-                    && (field.optional
-                        || field.kind.ends_with("[]")
-                        || !params.contains(&name.as_str())))
             {
-                return Err(format!("Invalid field {}.{name}.", route.name));
+                problems.push(format!(
+                    "Invalid field {}.{name}: kind {:?} is not string, int, bool or an array of one of them.",
+                    route.name, field.kind
+                ));
+            }
+
+            if !["path", "query"].contains(&field.r#in.as_str()) {
+                problems.push(format!(
+                    "Invalid field {}.{name}: \"in\" is {:?}, not path or query.",
+                    route.name, field.r#in
+                ));
+            } else if field.r#in == "path" {
+                if field.optional {
+                    problems.push(format!(
+                        "Invalid field {}.{name}: a path field cannot be optional.",
+                        route.name
+                    ));
+                }
+
+                if field.kind.ends_with("[]") {
+                    problems.push(format!(
+                        "Invalid field {}.{name}: a path field cannot be an array.",
+                        route.name
+                    ));
+                }
+
+                if !params.contains(&name.as_str()) {
+                    problems.push(format!(
+                        "Invalid field {}.{name}: it is in the path, but {} has no :{name} segment.",
+                        route.name, route.path
+                    ));
+                }
             }
         }
-        if params
-            .iter()
-            .any(|p| route.fields.get(*p).is_none_or(|f| f.r#in != "path"))
-        {
-            return Err(format!("Missing path field on {}.", route.name));
+
+        for param in &params {
+            if route.fields.get(*param).is_none_or(|f| f.r#in != "path") {
+                problems.push(format!(
+                    "Route {}: the path parameter :{param} has no field with in: path.",
+                    route.name
+                ));
+            }
         }
+
         if let Some(query) = route.query {
-            if query.operation.is_empty() || query.text.trim().is_empty() || query.id.is_empty() {
-                return Err(format!("Incomplete query on {}.", route.name));
+            for (part, empty) in [
+                ("operation", query.operation.is_empty()),
+                ("id", query.id.is_empty()),
+                ("text", query.text.trim().is_empty()),
+            ] {
+                if empty {
+                    problems.push(format!(
+                        "Route {}: the query has an empty {part}.",
+                        route.name
+                    ));
+                }
             }
-            for binding in query.variables.values() {
-                if binding
+
+            for (variable, binding) in &query.variables {
+                if let Some(input) = binding
                     .input
                     .as_ref()
-                    .is_some_and(|name| !route.fields.contains_key(name))
+                    .filter(|name| !route.fields.contains_key(*name))
                 {
-                    return Err(format!("Unknown query input on {}.", route.name));
+                    problems.push(format!(
+                        "Route {}: the query variable {variable} binds input {input}, which is not a field of the route.",
+                        route.name
+                    ));
                 }
             }
         }
     }
-    Ok(())
+
+    problems
 }
