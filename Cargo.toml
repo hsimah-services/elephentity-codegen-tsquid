@@ -3,7 +3,7 @@ name = "elephentity-codegen-tsquid"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Compile tsquid server manifests for Elephentity PHP applications"
+description = "Compile tsquid server manifests for Elephentity applications, in PHP or C#"
 
 [[bin]]
 name = "eleph-gen-tsquid"

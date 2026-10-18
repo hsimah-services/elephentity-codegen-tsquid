@@ -1,7 +1,7 @@
 # elephentity-codegen-tsquid
 
-Build-time Rust manifest compiler and standalone PHP runtime for tsquid's initial
-route data. Uses the version-1 server manifest introduced in tsquid PR #8.
+Build-time Rust manifest compiler for tsquid's initial route data, with a standalone PHP runtime, and a C# target for
+[`Elephentity.Tsquid`](https://github.com/hsimah-services/elephentity-dotnet). Uses the version-1 server manifest introduced in tsquid PR #8.
 
 ## Configure
 
@@ -54,6 +54,28 @@ writes it. No YAML, TypeScript, or JSON is parsed on application requests.
 On the client, declare each route's `query` and wire `readInitialData()` and
 `withInitialData()` into the Relay environment as described in tsquid's server
 integration skill. The entrypoint must preload the same operation and variables.
+
+## C# (.NET)
+
+The same builder emits C# for `Elephentity.Tsquid`. Set the target's `language` to `"csharp"` (`"php"` is the default, and its output is
+unchanged) and give it a `namespace`:
+
+```json
+{
+  "tsquid": {
+    "builder": "eleph-gen-tsquid@0.1.0",
+    "output": "Generated/Tsquid",
+    "manifest": "../../client/src/routes/__generated__/routes.manifest.json",
+    "language": "csharp",
+    "namespace": "Hsimah.Tsquid"
+  }
+}
+```
+
+No Composer or PHP is needed: `eleph install` fetches the binary pinned as `name@version`. It writes `TsquidManifest.cs`, whose
+`TsquidManifestFactory.Create()` returns the `RouteManifest` that `app.UseElephentityTsquid(...)` takes. `eleph generate --check` detects
+route/query drift exactly as it does for PHP. The validation (version 1, field kinds, path parameters, query bindings) is shared; only the
+output differs.
 
 ## Serve
 
