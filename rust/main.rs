@@ -1,119 +1,139 @@
-use serde::Deserialize;
+//! `eleph-gen-tsquid`: compiles tsquid's route manifest for the app's server, in PHP or C#.
+//!
+//! The validation is language-neutral (`validate.rs`); only the output differs (`emit_php.rs`, `emit_csharp.rs`). The target's
+//! `language` is `"php"` (the default, and unchanged) or `"csharp"`, which also needs a `namespace`.
+
+mod emit_csharp;
+mod emit_php;
+mod validate;
+
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
     io::{self, Read},
     path::{Component, Path, PathBuf},
 };
 
-#[derive(Deserialize)]
-struct Manifest {
-    version: u64,
-    routes: Vec<Route>,
-}
-#[derive(Deserialize)]
-struct Route {
-    name: String,
-    path: String,
-    ssr: bool,
-    fields: BTreeMap<String, Field>,
-    query: Option<Query>,
-}
-#[derive(Deserialize)]
-struct Field {
-    kind: String,
-    optional: bool,
-    r#in: String,
-}
-#[derive(Deserialize)]
-struct Query {
-    operation: String,
-    id: String,
-    text: String,
-    variables: BTreeMap<String, Binding>,
-}
-#[derive(Deserialize)]
-struct Binding {
-    input: Option<String>,
-    #[serde(rename = "default")]
-    _default: Option<Value>,
+/// C# reserved words, which cannot be a namespace segment without an `@` escape.
+const KEYWORDS: &[&str] = &[
+    "abstract",
+    "as",
+    "base",
+    "bool",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "checked",
+    "class",
+    "const",
+    "continue",
+    "decimal",
+    "default",
+    "delegate",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "event",
+    "explicit",
+    "extern",
+    "false",
+    "finally",
+    "fixed",
+    "float",
+    "for",
+    "foreach",
+    "goto",
+    "if",
+    "implicit",
+    "in",
+    "int",
+    "interface",
+    "internal",
+    "is",
+    "lock",
+    "long",
+    "namespace",
+    "new",
+    "null",
+    "object",
+    "operator",
+    "out",
+    "override",
+    "params",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "ref",
+    "return",
+    "sbyte",
+    "sealed",
+    "short",
+    "sizeof",
+    "stackalloc",
+    "static",
+    "string",
+    "struct",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "uint",
+    "ulong",
+    "unchecked",
+    "unsafe",
+    "ushort",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "while",
+];
+
+/// Whether `namespace` is a dotted run of identifiers, none of them a reserved word.
+fn is_namespace(namespace: &str) -> bool {
+    !namespace.is_empty()
+        && namespace.split('.').all(|segment| {
+            let mut characters = segment.chars();
+
+            characters
+                .next()
+                .is_some_and(|first| first == '_' || first.is_alphabetic())
+                && characters.all(|rest| rest == '_' || rest.is_alphanumeric())
+                && !KEYWORDS.contains(&segment)
+        })
 }
 
-fn validate(value: &Value) -> Result<(), String> {
-    let manifest: Manifest = serde_json::from_value(value.clone())
-        .map_err(|e| format!("Invalid tsquid manifest: {e}"))?;
-    if manifest.version != 1 {
-        return Err("Unsupported tsquid manifest version; expected 1.".into());
-    }
-    let mut names = std::collections::BTreeSet::new();
-    for route in manifest.routes {
-        if route.name.is_empty()
-            || !names.insert(route.name.clone())
-            || !route.path.starts_with('/')
-        {
-            return Err("Route names must be unique and nonempty; paths must start with /.".into());
-        }
-        let _ = route.ssr;
-        let params: Vec<_> = route
-            .path
-            .split('/')
-            .filter_map(|s| s.strip_prefix(':'))
-            .collect();
-        for (name, field) in &route.fields {
-            if !["string", "int", "bool", "string[]", "int[]", "bool[]"]
-                .contains(&field.kind.as_str())
-                || !["path", "query"].contains(&field.r#in.as_str())
-                || (field.r#in == "path"
-                    && (field.optional
-                        || field.kind.ends_with("[]")
-                        || !params.contains(&name.as_str())))
-            {
-                return Err(format!("Invalid field {}.{name}.", route.name));
-            }
-        }
-        if params
-            .iter()
-            .any(|p| route.fields.get(*p).is_none_or(|f| f.r#in != "path"))
-        {
-            return Err(format!("Missing path field on {}.", route.name));
-        }
-        if let Some(query) = route.query {
-            if query.operation.is_empty() || query.text.trim().is_empty() || query.id.is_empty() {
-                return Err(format!("Incomplete query on {}.", route.name));
-            }
-            for binding in query.variables.values() {
-                if binding
-                    .input
-                    .as_ref()
-                    .is_some_and(|name| !route.fields.contains_key(name))
-                {
-                    return Err(format!("Unknown query input on {}.", route.name));
-                }
-            }
-        }
-    }
-    Ok(())
+/// Which language a run writes. PHP is what every existing project gets.
+#[derive(PartialEq)]
+enum Language {
+    Php,
+    Csharp,
 }
 
-fn php(value: &Value) -> String {
-    match value {
-        Value::Null => "null".into(),
-        Value::Bool(v) => v.to_string(),
-        Value::Number(v) => v.to_string(),
-        Value::String(v) => format!("'{}'", v.replace('\\', "\\\\").replace('\'', "\\'")),
-        Value::Array(v) => format!("[{}]", v.iter().map(php).collect::<Vec<_>>().join(", ")),
-        Value::Object(v) => format!(
-            "(object) [{}]",
-            v.iter()
-                .map(|(k, v)| format!("{} => {}", php(&json!(k)), php(v)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+fn language(config: &Value) -> Result<Language, String> {
+    match config.get("language") {
+        None | Some(Value::Null) => Ok(Language::Php),
+        Some(Value::String(name)) if name == "php" => Ok(Language::Php),
+        Some(Value::String(name)) if name == "csharp" => Ok(Language::Csharp),
+        _ => Err("The tsquid target's \"language\" must be \"php\" or \"csharp\".".into()),
     }
 }
 
-fn response(files: Vec<Value>, errors: Vec<String>) -> Value {
-    json!({"elephentity":1,"irVersion":"1.2","headerStyle":"php","extensions":["php"],"files":files,"errors":errors})
+fn response(files: Vec<Value>, errors: Vec<String>, language: &Language) -> Value {
+    match language {
+        Language::Php => {
+            json!({"elephentity":1,"irVersion":"1.2","headerStyle":"php","extensions":["php"],"files":files,"errors":errors})
+        }
+        // Nothing is claimed when generation failed, so a failed run sweeps nothing.
+        Language::Csharp => {
+            json!({"elephentity":1,"irVersion":"1.2","headerStyle":"line-comment","extensions": if errors.is_empty() { vec!["cs"] } else { vec![] },"files":files,"errors":errors})
+        }
+    }
 }
 
 fn run(request: &Value) -> Result<Value, String> {
@@ -138,8 +158,18 @@ fn run(request: &Value) -> Result<Value, String> {
     if !integrations.is_object() && integrations != &json!([]) {
         return Err("Missing schema.project.integrations object.".into());
     }
+    let language = match language(&request["config"]) {
+        Ok(language) => language,
+        Err(error) => return Ok(response(vec![], vec![error], &Language::Php)),
+    };
     if integrations.get("tsquid").is_none() {
-        return Ok(response(vec![], vec![]));
+        return Ok(response(vec![], vec![], &language));
+    }
+    if language == Language::Csharp {
+        let problems = namespace_problems(&request["config"]);
+        if !problems.is_empty() {
+            return Ok(response(vec![], problems, &language));
+        }
     }
     let result = (|| {
         let manifest_path = request["config"]["manifest"].as_str().filter(|s| !s.is_empty()).ok_or("Set the tsquid target's manifest path (relative to its output directory, or absolute).")?;
@@ -161,19 +191,33 @@ fn run(request: &Value) -> Result<Value, String> {
             .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
         let manifest: Value =
             serde_json::from_str(&text).map_err(|e| format!("Invalid manifest JSON: {e}"))?;
-        validate(&manifest)?;
-        Ok::<_, String>(format!(
-            "return new \\Eleph\\Tsquid\\Manifest({});\n",
-            php(&manifest)
-        ))
+        validate::validate(&manifest)?;
+        Ok::<_, String>(match language {
+            Language::Php => ("tsquid-manifest.php", emit_php::manifest(&manifest)),
+            Language::Csharp => (
+                "TsquidManifest.cs",
+                emit_csharp::manifest(
+                    &manifest,
+                    request["config"]["namespace"].as_str().unwrap_or(""),
+                ),
+            ),
+        })
     })();
     Ok(match result {
-        Ok(body) => response(
-            vec![json!({"path":"tsquid-manifest.php","body":body})],
-            vec![],
-        ),
-        Err(error) => response(vec![], vec![error]),
+        Ok((path, body)) => response(vec![json!({"path":path,"body":body})], vec![], &language),
+        Err(error) => response(vec![], vec![error], &language),
     })
+}
+
+/// Every problem with a C# target's `namespace`.
+fn namespace_problems(config: &Value) -> Vec<String> {
+    match config.get("namespace") {
+        Some(Value::String(namespace)) if is_namespace(namespace) => vec![],
+        Some(Value::String(namespace)) if !namespace.is_empty() => vec![format!(
+            "The tsquid target's \"namespace\" (\"{namespace}\") is not a valid C# namespace: use dot-separated identifiers that are not reserved words."
+        )],
+        _ => vec!["The tsquid target needs \"namespace\" set to a non-empty string when \"language\" is \"csharp\".".into()],
+    }
 }
 
 fn main() {
@@ -195,14 +239,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn protocol_and_generated_contract() {
         let vectors: Value =
             serde_json::from_str(include_str!("../tests/fixtures/vectors.json")).unwrap();
-        validate(&vectors["manifest"]).unwrap();
+        validate::validate(&vectors["manifest"]).unwrap();
         let mut bad = vectors["manifest"].clone();
         bad["version"] = json!(2);
-        assert!(validate(&bad).is_err());
+        assert!(validate::validate(&bad).is_err());
         assert!(run(&json!({"elephentity":1,"irVersion":"1.1","request":"describe"})).is_err());
         assert!(
             run(&json!({"elephentity":1,"irVersion":"1.2","request":"describe"})).unwrap()
@@ -217,8 +262,16 @@ mod tests {
             json!([])
         );
         assert_eq!(
-            php(&json!({"nested":{},"list":[],"quote":"'\\"})),
+            emit_php::php(&json!({"nested":{},"list":[],"quote":"'\\"})),
             "(object) ['list' => [], 'nested' => (object) [], 'quote' => '\\'\\\\']"
         );
+    }
+
+    #[test]
+    fn namespaces_are_dotted_identifiers_that_are_not_keywords() {
+        assert!(is_namespace("Hsimah.Entity"));
+        assert!(!is_namespace("a..b"));
+        assert!(!is_namespace("App.class"));
+        assert!(!is_namespace(""));
     }
 }

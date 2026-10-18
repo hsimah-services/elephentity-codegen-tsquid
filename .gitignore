@@ -1,2 +1,7 @@
 /target/
+/tests/dotnet/bin/
+/tests/dotnet/.deps/
+/tests/dotnet/Generated/
+/tests/dotnet/obj/
+/tests/fixtures/out/
 /vendor/
