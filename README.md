@@ -116,7 +116,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
 php tests/runtime.php
-php tests/integration.php /path/to/elephentity-dev /tmp/tsquid-payload.json
+php tests/integration.php /path/to/elephentity-dev /tmp/tsquid-payload.json   # needs eleph on PATH (install.sh) or ELEPH
 node tests/client.mjs /path/to/tsquid/packages/routes/dist/initialData.js /tmp/tsquid-payload.json
 ```
 

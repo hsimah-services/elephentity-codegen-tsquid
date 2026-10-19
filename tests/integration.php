@@ -49,7 +49,7 @@ try {
             'tsquid' => ['builder' => dirname(__DIR__) . '/bin/eleph-gen-tsquid', 'output' => 'generated/tsquid', 'manifest' => '../../routes.manifest.json'],
         ],
     ], JSON_THROW_ON_ERROR));
-    $generate = [PHP_BINARY, $workspace . '/elephentity/packages/cli/bin/eleph', 'generate', '--project', $project];
+    $generate = [getenv('ELEPH') ?: 'eleph', 'generate', '--project', $project];
     [$status, $output] = command($generate);
     check($status === 0, 'Real spec compiler/orchestrator generation failed: ' . $output);
     $path = $project . '/generated/tsquid/tsquid-manifest.php';
