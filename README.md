@@ -1,7 +1,7 @@
 # elephentity-codegen-tsquid
 
 Build-time Rust manifest compiler for tsquid's initial route data, with a standalone PHP runtime, and a C# target for
-[`Elephentity.Tsquid`](https://github.com/hsimah-services/elephentity-dotnet). Uses the version-1 server manifest introduced in tsquid PR #8.
+[`Elephentity.Tsquid`](https://github.com/hsimah-services/elephentity/tree/main/dotnet). Uses the version-1 server manifest introduced in tsquid PR #8.
 
 ## Configure
 

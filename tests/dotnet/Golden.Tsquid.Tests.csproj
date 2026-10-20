@@ -10,7 +10,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-    <!-- Where elephentity-dotnet is checked out: the pinned commit in elephentity-dotnet.sha. -->
+    <!-- Where elephentity-dotnet is checked out: this repository's dotnet/ tree, copied there by CI (tools/dotnet mounts it locally). -->
     <ElephentityDotnet Condition="'$(ElephentityDotnet)' == ''">$(ELEPH_DOTNET_DIR)</ElephentityDotnet>
     <ElephentityDotnet Condition="'$(ElephentityDotnet)' == ''">$(MSBuildThisFileDirectory).deps/elephentity-dotnet</ElephentityDotnet>
   </PropertyGroup>
